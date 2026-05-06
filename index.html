@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Repeat">
+  <meta name="theme-color" content="#0a0a0a">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <title>Repeat Check</title>
+  <style>
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', system-ui, sans-serif;
+      background: #0a0a0a;
+      color: #fff;
+      display: flex;
+      flex-direction: column;
+      padding-top: env(safe-area-inset-top);
+      padding-bottom: env(safe-area-inset-bottom);
+      user-select: none;
+      -webkit-user-select: none;
+      touch-action: manipulation;
+      overscroll-behavior: none;
+    }
+
+    header {
+      padding: 14px 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+      flex-shrink: 0;
+    }
+    h1 {
+      font-size: 17px;
+      font-weight: 600;
+      margin: 0;
+      letter-spacing: -0.01em;
+    }
+    h1 span {
+      color: rgba(255,255,255,0.4);
+      font-weight: 400;
+      margin-left: 6px;
+    }
+
+    .preview-area {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+      background:
+        linear-gradient(45deg, #1a1a1a 25%, transparent 25%),
+        linear-gradient(-45deg, #1a1a1a 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #1a1a1a 75%),
+        linear-gradient(-45deg, transparent 75%, #1a1a1a 75%);
+      background-size: 20px 20px;
+      background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+      background-color: #0f0f0f;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+
+    canvas {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+      display: block;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+      image-rendering: -webkit-optimize-contrast;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 40px;
+      color: rgba(255,255,255,0.5);
+    }
+    .empty-state .glyph {
+      width: 80px;
+      height: 80px;
+      margin: 0 auto 16px;
+      opacity: 0.6;
+    }
+    .empty-state .title {
+      font-size: 17px;
+      font-weight: 600;
+      color: #fff;
+      margin-bottom: 6px;
+    }
+    .empty-state .subtitle {
+      font-size: 14px;
+      line-height: 1.5;
+      max-width: 280px;
+      margin: 0 auto 20px;
+    }
+
+    .upload-btn {
+      display: inline-block;
+      background: #00d4ff;
+      color: #000;
+      padding: 14px 28px;
+      border-radius: 12px;
+      font-weight: 600;
+      font-size: 15px;
+      cursor: pointer;
+      border: none;
+      font-family: inherit;
+    }
+    .upload-btn.small {
+      padding: 8px 14px;
+      font-size: 13px;
+    }
+    .upload-btn:active { opacity: 0.8; }
+
+    .controls {
+      background: #0a0a0a;
+      border-top: 1px solid rgba(255,255,255,0.06);
+      padding: 14px 20px;
+      padding-bottom: calc(14px + env(safe-area-inset-bottom));
+      flex-shrink: 0;
+    }
+
+    .mode-tabs {
+      display: flex;
+      gap: 4px;
+      background: rgba(255,255,255,0.05);
+      padding: 4px;
+      border-radius: 10px;
+      margin-bottom: 14px;
+    }
+    .mode-tabs button {
+      flex: 1;
+      padding: 10px;
+      background: transparent;
+      border: none;
+      color: rgba(255,255,255,0.6);
+      font-size: 14px;
+      font-weight: 500;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.15s;
+      font-family: inherit;
+    }
+    .mode-tabs button.active {
+      background: rgba(255,255,255,0.12);
+      color: #fff;
+    }
+
+    .slider-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+    .slider-row label {
+      width: 18px;
+      font-size: 13px;
+      color: rgba(255,255,255,0.6);
+      font-weight: 700;
+      letter-spacing: 0.05em;
+    }
+    .slider-row input[type=range] {
+      flex: 1;
+      -webkit-appearance: none;
+      appearance: none;
+      height: 4px;
+      background: rgba(255,255,255,0.1);
+      border-radius: 2px;
+      outline: none;
+      margin: 0;
+    }
+    .slider-row input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 26px;
+      height: 26px;
+      background: #fff;
+      border-radius: 50%;
+      cursor: pointer;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+    }
+    .slider-row input[type=range]::-moz-range-thumb {
+      width: 26px;
+      height: 26px;
+      background: #fff;
+      border-radius: 50%;
+      cursor: pointer;
+      border: none;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+    }
+    .slider-row .value {
+      width: 56px;
+      text-align: right;
+      font-size: 13px;
+      color: rgba(255,255,255,0.85);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .quick-buttons {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    .quick-buttons button {
+      flex: 1;
+      padding: 9px;
+      background: rgba(255,255,255,0.05);
+      border: none;
+      color: rgba(255,255,255,0.8);
+      font-size: 13px;
+      font-weight: 500;
+      border-radius: 8px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .quick-buttons button:active {
+      background: rgba(255,255,255,0.12);
+    }
+
+    .actions {
+      display: flex;
+      gap: 10px;
+    }
+    .actions button {
+      flex: 1;
+      padding: 13px;
+      border: none;
+      border-radius: 12px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .btn-primary {
+      background: #00d4ff;
+      color: #000;
+    }
+    .btn-secondary {
+      background: rgba(255,255,255,0.08);
+      color: #fff;
+    }
+    .btn-primary:active { opacity: 0.85; }
+    .btn-secondary:active { background: rgba(255,255,255,0.14); }
+
+    input[type=file] {
+      display: none;
+    }
+
+    .toast {
+      position: fixed;
+      bottom: 120px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(255,255,255,0.95);
+      color: #000;
+      padding: 11px 20px;
+      border-radius: 100px;
+      font-size: 14px;
+      font-weight: 500;
+      opacity: 0;
+      transition: opacity 0.2s;
+      pointer-events: none;
+      z-index: 100;
+    }
+    .toast.show {
+      opacity: 1;
+    }
+
+    .info-line {
+      font-size: 11px;
+      color: rgba(255,255,255,0.4);
+      text-align: center;
+      margin-top: 8px;
+      font-variant-numeric: tabular-nums;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Repeat Check <span id="dimensions"></span></h1>
+    <button id="newBtn" class="upload-btn small">Nieuw</button>
+  </header>
+
+  <div class="preview-area" id="previewArea">
+    <div class="empty-state" id="emptyState">
+      <svg class="glyph" viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect x="6" y="6" width="32" height="32" fill="#00d4ff"/>
+        <rect x="42" y="6" width="32" height="32" fill="#fff" opacity="0.25"/>
+        <rect x="6" y="42" width="32" height="32" fill="#fff" opacity="0.25"/>
+        <rect x="42" y="42" width="32" height="32" fill="#00d4ff"/>
+      </svg>
+      <div class="title">Begin met een afbeelding</div>
+      <div class="subtitle">Upload je dessin om de repeat-randen in het midden te zien.</div>
+      <label for="fileInput" class="upload-btn">Kies afbeelding</label>
+    </div>
+    <canvas id="canvas" style="display: none;"></canvas>
+  </div>
+
+  <div class="controls" id="controls" style="display: none;">
+    <div class="mode-tabs">
+      <button data-mode="original" class="active">Origineel</button>
+      <button data-mode="offset">Offset</button>
+      <button data-mode="tile">Tegels 2×2</button>
+    </div>
+
+    <div id="offsetControls" style="display: none;">
+      <div class="slider-row">
+        <label>X</label>
+        <input type="range" id="sliderX" min="0" max="100" value="50">
+        <div class="value" id="valueX">50%</div>
+      </div>
+      <div class="slider-row">
+        <label>Y</label>
+        <input type="range" id="sliderY" min="0" max="100" value="50">
+        <div class="value" id="valueY">50%</div>
+      </div>
+      <div class="quick-buttons">
+        <button data-preset-x="50" data-preset-y="50">50/50</button>
+        <button data-preset-x="25" data-preset-y="25">25/25</button>
+        <button data-preset-x="50" data-preset-y="0">50/0</button>
+        <button data-preset-x="0" data-preset-y="50">0/50</button>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button class="btn-secondary" id="shareBtn">Delen</button>
+      <button class="btn-primary" id="saveBtn">Bewaar</button>
+    </div>
+    <div class="info-line" id="infoLine"></div>
+  </div>
+
+  <input type="file" id="fileInput" accept="image/*">
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const fileInput = document.getElementById('fileInput');
+    const newBtn = document.getElementById('newBtn');
+    const emptyState = document.getElementById('emptyState');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const controls = document.getElementById('controls');
+    const offsetControls = document.getElementById('offsetControls');
+    const sliderX = document.getElementById('sliderX');
+    const sliderY = document.getElementById('sliderY');
+    const valueX = document.getElementById('valueX');
+    const valueY = document.getElementById('valueY');
+    const tabs = document.querySelectorAll('.mode-tabs button');
+    const presetBtns = document.querySelectorAll('[data-preset-x]');
+    const saveBtn = document.getElementById('saveBtn');
+    const shareBtn = document.getElementById('shareBtn');
+    const toast = document.getElementById('toast');
+    const dimensions = document.getElementById('dimensions');
+    const infoLine = document.getElementById('infoLine');
+
+    let currentImage = null;
+    let currentFileName = 'dessin.png';
+    let mode = 'original';
+
+    function showToast(msg) {
+      toast.textContent = msg;
+      toast.classList.add('show');
+      clearTimeout(showToast._t);
+      showToast._t = setTimeout(() => toast.classList.remove('show'), 2000);
+    }
+
+    fileInput.addEventListener('change', e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      currentFileName = file.name.replace(/\.[^.]+$/, '') || 'dessin';
+      const reader = new FileReader();
+      reader.onload = ev => {
+        const img = new Image();
+        img.onload = () => {
+          currentImage = img;
+          emptyState.style.display = 'none';
+          canvas.style.display = 'block';
+          controls.style.display = 'block';
+          dimensions.textContent = img.width + ' × ' + img.height;
+          render();
+        };
+        img.onerror = () => showToast('Kan afbeelding niet laden');
+        img.src = ev.target.result;
+      };
+      reader.readAsDataURL(file);
+    });
+
+    newBtn.addEventListener('click', () => {
+      fileInput.value = '';
+      fileInput.click();
+    });
+
+    tabs.forEach(tab => {
+      tab.addEventListener('click', () => {
+        tabs.forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        mode = tab.dataset.mode;
+        offsetControls.style.display = (mode === 'offset' || mode === 'tile') ? 'block' : 'none';
+        render();
+      });
+    });
+
+    sliderX.addEventListener('input', () => {
+      valueX.textContent = sliderX.value + '%';
+      render();
+    });
+    sliderY.addEventListener('input', () => {
+      valueY.textContent = sliderY.value + '%';
+      render();
+    });
+
+    presetBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        sliderX.value = btn.dataset.presetX;
+        sliderY.value = btn.dataset.presetY;
+        valueX.textContent = sliderX.value + '%';
+        valueY.textContent = sliderY.value + '%';
+        render();
+      });
+    });
+
+    function render() {
+      if (!currentImage) return;
+      const w = currentImage.width;
+      const h = currentImage.height;
+
+      ctx.imageSmoothingEnabled = false;
+
+      if (mode === 'original') {
+        canvas.width = w;
+        canvas.height = h;
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(currentImage, 0, 0);
+        infoLine.textContent = w + ' × ' + h + ' px';
+      } else if (mode === 'offset') {
+        canvas.width = w;
+        canvas.height = h;
+        ctx.imageSmoothingEnabled = false;
+        const ox = Math.round(w * (parseInt(sliderX.value) / 100));
+        const oy = Math.round(h * (parseInt(sliderY.value) / 100));
+        ctx.drawImage(currentImage, ox, oy);
+        ctx.drawImage(currentImage, ox - w, oy);
+        ctx.drawImage(currentImage, ox, oy - h);
+        ctx.drawImage(currentImage, ox - w, oy - h);
+        infoLine.textContent = 'Offset ' + ox + ' × ' + oy + ' px';
+      } else if (mode === 'tile') {
+        canvas.width = w * 2;
+        canvas.height = h * 2;
+        ctx.imageSmoothingEnabled = false;
+        const ox = Math.round(w * (parseInt(sliderX.value) / 100));
+        const oy = Math.round(h * (parseInt(sliderY.value) / 100));
+
+        // Bouw één tegel met offset toegepast
+        const off = document.createElement('canvas');
+        off.width = w;
+        off.height = h;
+        const offCtx = off.getContext('2d');
+        offCtx.imageSmoothingEnabled = false;
+        if (ox === 0 && oy === 0) {
+          offCtx.drawImage(currentImage, 0, 0);
+        } else {
+          offCtx.drawImage(currentImage, ox, oy);
+          offCtx.drawImage(currentImage, ox - w, oy);
+          offCtx.drawImage(currentImage, ox, oy - h);
+          offCtx.drawImage(currentImage, ox - w, oy - h);
+        }
+        // Plak 2x2 om de echte repeat te zien
+        for (let y = 0; y < 2; y++) {
+          for (let x = 0; x < 2; x++) {
+            ctx.drawImage(off, x * w, y * h);
+          }
+        }
+        infoLine.textContent = '2×2 tegels (' + (w*2) + ' × ' + (h*2) + ' px)';
+      }
+    }
+
+    function getBlob(type = 'image/png') {
+      return new Promise(resolve => canvas.toBlob(resolve, type));
+    }
+
+    function buildFileName() {
+      const x = sliderX.value, y = sliderY.value;
+      if (mode === 'original') return currentFileName + '.png';
+      if (mode === 'offset') return currentFileName + '-offset-' + x + 'x' + y + '.png';
+      return currentFileName + '-tile-' + x + 'x' + y + '.png';
+    }
+
+    saveBtn.addEventListener('click', async () => {
+      try {
+        const blob = await getBlob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = buildFileName();
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        showToast('Opgeslagen');
+      } catch (err) {
+        showToast('Opslaan mislukt');
+      }
+    });
+
+    shareBtn.addEventListener('click', async () => {
+      try {
+        const blob = await getBlob();
+        const file = new File([blob], buildFileName(), { type: 'image/png' });
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file], title: 'Repeat Check' });
+        } else {
+          // Fallback: gewoon downloaden
+          saveBtn.click();
+        }
+      } catch (err) {
+        if (err && err.name === 'AbortError') return;
+        showToast('Delen niet ondersteund');
+      }
+    });
+
+    // PWA service worker
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js').catch(() => {});
+    }
+
+    // Voorkom dat dubbeltikken zoomt op iPad
+    document.addEventListener('gesturestart', e => e.preventDefault());
+    document.addEventListener('dblclick', e => e.preventDefault(), { passive: false });
+  </script>
+</body>
+</html>
