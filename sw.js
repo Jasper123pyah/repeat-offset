@@ -1,5 +1,5 @@
 // Repeat Check service worker — minimale offline cache
-const CACHE = 'repeat-offset-v2';
+const CACHE = 'repeat-offset-v3';
 const FILES = [
   './',
   './index.html',
