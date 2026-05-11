@@ -221,6 +221,39 @@
       background: rgba(255,255,255,0.12);
     }
 
+    .heal-toggle {
+      width: 100%;
+      padding: 11px;
+      background: rgba(255,255,255,0.05);
+      border: none;
+      color: rgba(255,255,255,0.8);
+      font-size: 14px;
+      font-weight: 500;
+      border-radius: 8px;
+      cursor: pointer;
+      margin-bottom: 14px;
+      font-family: inherit;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+    .heal-toggle .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.25);
+      transition: background 0.15s;
+    }
+    .heal-toggle.active {
+      background: rgba(0,212,255,0.12);
+      color: #00d4ff;
+    }
+    .heal-toggle.active .dot {
+      background: #00d4ff;
+      box-shadow: 0 0 8px rgba(0,212,255,0.6);
+    }
+
     .actions {
       display: flex;
       gap: 10px;
@@ -324,6 +357,7 @@
         <button data-preset-x="50" data-preset-y="0">50/0</button>
         <button data-preset-x="0" data-preset-y="50">0/50</button>
       </div>
+      <button id="healBtn" class="heal-toggle"><span class="dot"></span>Naden repareren</button>
     </div>
 
     <div class="actions">
@@ -352,6 +386,7 @@
     const presetBtns = document.querySelectorAll('[data-preset-x]');
     const saveBtn = document.getElementById('saveBtn');
     const shareBtn = document.getElementById('shareBtn');
+    const healBtn = document.getElementById('healBtn');
     const toast = document.getElementById('toast');
     const dimensions = document.getElementById('dimensions');
     const infoLine = document.getElementById('infoLine');
@@ -359,6 +394,11 @@
     let currentImage = null;
     let currentFileName = 'dessin.png';
     let mode = 'original';
+    let healEnabled = false;
+    let healToken = 0;
+    let healTimer = null;
+    let healingPromise = null;
+    let baseInfoText = '';
 
     function showToast(msg) {
       toast.textContent = msg;
@@ -422,8 +462,69 @@
       });
     });
 
+    healBtn.addEventListener('click', () => {
+      healEnabled = !healEnabled;
+      healBtn.classList.toggle('active', healEnabled);
+      render();
+    });
+
+    async function flushHeal() {
+      if (healTimer) {
+        clearTimeout(healTimer);
+        healTimer = null;
+        // Re-trigger the latest render path synchronously to compute heal
+        if (healEnabled && (mode === 'offset' || mode === 'tile') && currentImage) {
+          const w = currentImage.width, h = currentImage.height;
+          const ox = Math.round(w * (parseInt(sliderX.value) / 100));
+          const oy = Math.round(h * (parseInt(sliderY.value) / 100));
+          if (ox > 0 || oy > 0) {
+            const tile = buildOffsetTile(w, h, ox, oy);
+            drawTileToCanvas(tile, mode === 'tile');
+            await runHeal(tile, ox, oy);
+          }
+        }
+      }
+      if (healingPromise) await healingPromise;
+    }
+
+    function buildOffsetTile(w, h, ox, oy) {
+      const off = document.createElement('canvas');
+      off.width = w;
+      off.height = h;
+      const offCtx = off.getContext('2d');
+      offCtx.imageSmoothingEnabled = false;
+      if (ox === 0 && oy === 0) {
+        offCtx.drawImage(currentImage, 0, 0);
+      } else {
+        offCtx.drawImage(currentImage, ox, oy);
+        offCtx.drawImage(currentImage, ox - w, oy);
+        offCtx.drawImage(currentImage, ox, oy - h);
+        offCtx.drawImage(currentImage, ox - w, oy - h);
+      }
+      return off;
+    }
+
+    function drawTileToCanvas(tile, isTileMode) {
+      const w = tile.width, h = tile.height;
+      ctx.imageSmoothingEnabled = false;
+      if (isTileMode) {
+        canvas.width = w * 2;
+        canvas.height = h * 2;
+        for (let y = 0; y < 2; y++) {
+          for (let x = 0; x < 2; x++) {
+            ctx.drawImage(tile, x * w, y * h);
+          }
+        }
+      } else {
+        canvas.width = w;
+        canvas.height = h;
+        ctx.drawImage(tile, 0, 0);
+      }
+    }
+
     function render() {
       if (!currentImage) return;
+      healToken++; // invalidate any in-flight heal
       const w = currentImage.width;
       const h = currentImage.height;
 
@@ -432,49 +533,140 @@
       if (mode === 'original') {
         canvas.width = w;
         canvas.height = h;
-        ctx.imageSmoothingEnabled = false;
         ctx.drawImage(currentImage, 0, 0);
-        infoLine.textContent = w + ' × ' + h + ' px';
-      } else if (mode === 'offset') {
-        canvas.width = w;
-        canvas.height = h;
-        ctx.imageSmoothingEnabled = false;
-        const ox = Math.round(w * (parseInt(sliderX.value) / 100));
-        const oy = Math.round(h * (parseInt(sliderY.value) / 100));
-        ctx.drawImage(currentImage, ox, oy);
-        ctx.drawImage(currentImage, ox - w, oy);
-        ctx.drawImage(currentImage, ox, oy - h);
-        ctx.drawImage(currentImage, ox - w, oy - h);
-        infoLine.textContent = 'Offset ' + ox + ' × ' + oy + ' px';
-      } else if (mode === 'tile') {
-        canvas.width = w * 2;
-        canvas.height = h * 2;
-        ctx.imageSmoothingEnabled = false;
-        const ox = Math.round(w * (parseInt(sliderX.value) / 100));
-        const oy = Math.round(h * (parseInt(sliderY.value) / 100));
+        baseInfoText = w + ' × ' + h + ' px';
+        infoLine.textContent = baseInfoText;
+        return;
+      }
 
-        // Bouw één tegel met offset toegepast
-        const off = document.createElement('canvas');
-        off.width = w;
-        off.height = h;
-        const offCtx = off.getContext('2d');
-        offCtx.imageSmoothingEnabled = false;
-        if (ox === 0 && oy === 0) {
-          offCtx.drawImage(currentImage, 0, 0);
-        } else {
-          offCtx.drawImage(currentImage, ox, oy);
-          offCtx.drawImage(currentImage, ox - w, oy);
-          offCtx.drawImage(currentImage, ox, oy - h);
-          offCtx.drawImage(currentImage, ox - w, oy - h);
-        }
-        // Plak 2x2 om de echte repeat te zien
-        for (let y = 0; y < 2; y++) {
-          for (let x = 0; x < 2; x++) {
-            ctx.drawImage(off, x * w, y * h);
+      const ox = Math.round(w * (parseInt(sliderX.value) / 100));
+      const oy = Math.round(h * (parseInt(sliderY.value) / 100));
+      const tile = buildOffsetTile(w, h, ox, oy);
+      drawTileToCanvas(tile, mode === 'tile');
+
+      baseInfoText = mode === 'offset'
+        ? 'Offset ' + ox + ' × ' + oy + ' px'
+        : '2×2 tegels (' + (w*2) + ' × ' + (h*2) + ' px)';
+      infoLine.textContent = baseInfoText;
+
+      if (healEnabled && (ox > 0 || oy > 0)) {
+        scheduleHeal(tile, ox, oy);
+      }
+    }
+
+    function scheduleHeal(tile, ox, oy) {
+      if (healTimer) clearTimeout(healTimer);
+      healTimer = setTimeout(() => {
+        healTimer = null;
+        runHeal(tile, ox, oy);
+      }, 200);
+    }
+
+    async function runHeal(tile, ox, oy) {
+      const myToken = healToken;
+      while (healingPromise) await healingPromise;
+      if (myToken !== healToken) return;
+
+      let resolveDone;
+      healingPromise = new Promise(r => { resolveDone = r; });
+      try {
+        infoLine.textContent = baseInfoText + ' — naden repareren…';
+        await new Promise(r => requestAnimationFrame(() => r()));
+
+        const tCtx = tile.getContext('2d');
+        const imageData = tCtx.getImageData(0, 0, tile.width, tile.height);
+        const ok = await healSeams(imageData, ox, oy, () => myToken !== healToken);
+        if (!ok || myToken !== healToken) return;
+        tCtx.putImageData(imageData, 0, 0);
+
+        drawTileToCanvas(tile, mode === 'tile');
+        infoLine.textContent = baseInfoText + ' · gerepareerd';
+      } finally {
+        const done = resolveDone;
+        healingPromise = null;
+        done();
+      }
+    }
+
+    // Poisson gradient-domain seam healing.
+    // Solves ∇²f = div(v) in a band around the seams, where v matches the
+    // original image gradients everywhere except across the seam edges (set to 0).
+    // Jacobi iteration with periodic yields to keep the UI responsive.
+    async function healSeams(imageData, ox, oy, shouldAbort) {
+      const w = imageData.width;
+      const h = imageData.height;
+      const data = imageData.data;
+      const hasV = ox > 0;
+      const hasH = oy > 0;
+      if (!hasV && !hasH) return true;
+
+      const band = Math.max(8, Math.min(32, Math.floor(Math.min(w, h) / 20)));
+      const iterations = 80;
+      const N = w * h;
+
+      // Mask of pixels we'll solve for
+      const inMask = new Uint8Array(N);
+      const maskedPixels = [];
+      for (let y = 1; y < h - 1; y++) {
+        for (let x = 1; x < w - 1; x++) {
+          const nearV = hasV && Math.abs(x - ox) < band;
+          const nearH = hasH && Math.abs(y - oy) < band;
+          if (nearV || nearH) {
+            const p = y * w + x;
+            inMask[p] = 1;
+            maskedPixels.push(p);
           }
         }
-        infoLine.textContent = '2×2 tegels (' + (w*2) + ' × ' + (h*2) + ' px)';
       }
+
+      // Per channel: solve Poisson equation
+      for (let c = 0; c < 3; c++) {
+        const src = new Float32Array(N);
+        for (let i = 0; i < N; i++) src[i] = data[i * 4 + c];
+
+        // Precompute divergence b(p) for masked pixels.
+        // Edges that cross a seam contribute 0; other edges contribute (src(p) - src(q)).
+        const b = new Float32Array(N);
+        for (let k = 0; k < maskedPixels.length; k++) {
+          const p = maskedPixels[k];
+          const x = p % w, y = (p - x) / w;
+          const sP = src[p];
+          let sum = 0;
+          if (!(hasV && x + 1 === ox)) sum += sP - src[p + 1];
+          if (!(hasV && x === ox))     sum += sP - src[p - 1];
+          if (!(hasH && y + 1 === oy)) sum += sP - src[p + w];
+          if (!(hasH && y === oy))     sum += sP - src[p - w];
+          b[p] = sum;
+        }
+
+        let f = new Float32Array(src);
+        let fNew = new Float32Array(src);
+
+        for (let it = 0; it < iterations; it++) {
+          for (let k = 0; k < maskedPixels.length; k++) {
+            const p = maskedPixels[k];
+            const r = inMask[p + 1] ? f[p + 1] : src[p + 1];
+            const l = inMask[p - 1] ? f[p - 1] : src[p - 1];
+            const d = inMask[p + w] ? f[p + w] : src[p + w];
+            const u = inMask[p - w] ? f[p - w] : src[p - w];
+            fNew[p] = (r + l + d + u + b[p]) * 0.25;
+          }
+          const tmp = f; f = fNew; fNew = tmp;
+
+          if ((it + 1) % 8 === 0 && it < iterations - 1) {
+            await new Promise(r => setTimeout(r, 0));
+            if (shouldAbort && shouldAbort()) return false;
+          }
+        }
+
+        for (let k = 0; k < maskedPixels.length; k++) {
+          const p = maskedPixels[k];
+          let v = f[p] | 0;
+          if (v < 0) v = 0; else if (v > 255) v = 255;
+          data[p * 4 + c] = v;
+        }
+      }
+      return true;
     }
 
     function getBlob(type = 'image/png') {
@@ -483,13 +675,15 @@
 
     function buildFileName() {
       const x = sliderX.value, y = sliderY.value;
+      const suffix = healEnabled && (mode === 'offset' || mode === 'tile') ? '-healed' : '';
       if (mode === 'original') return currentFileName + '.png';
-      if (mode === 'offset') return currentFileName + '-offset-' + x + 'x' + y + '.png';
-      return currentFileName + '-tile-' + x + 'x' + y + '.png';
+      if (mode === 'offset') return currentFileName + '-offset-' + x + 'x' + y + suffix + '.png';
+      return currentFileName + '-tile-' + x + 'x' + y + suffix + '.png';
     }
 
     saveBtn.addEventListener('click', async () => {
       try {
+        await flushHeal();
         const blob = await getBlob();
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -507,6 +701,7 @@
 
     shareBtn.addEventListener('click', async () => {
       try {
+        await flushHeal();
         const blob = await getBlob();
         const file = new File([blob], buildFileName(), { type: 'image/png' });
         if (navigator.canShare && navigator.canShare({ files: [file] })) {
