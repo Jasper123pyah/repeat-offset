@@ -588,25 +588,77 @@
       }
     }
 
-    // Poisson gradient-domain seam healing.
-    // Solves ∇²f = div(v) in a band around the seams, where v matches the
-    // original image gradients everywhere except across the seam edges (set to 0).
-    // Jacobi iteration with periodic yields to keep the UI responsive.
+    // Two-pass Poisson seam healing.
+    //
+    // Pass 1 — multi-scale broad correction: downscale the offset tile to ~512px,
+    // run Poisson with a generous band (~1/3 of dimension) and a multi-pixel seam
+    // core, compute the correction, bilinearly upscale, add back. Kills the broad
+    // tonal shift across the seam without touching high-frequency pattern detail.
+    //
+    // Pass 2 — narrow full-res cleanup: the upscaled correction from pass 1 is
+    // smooth, so it can't fully cancel a sharp single-pixel jump that remains at
+    // the actual seam line. A small full-res Poisson with a 32px band and a 3px
+    // seam core eats that residual without softening detail outside the band.
     async function healSeams(imageData, ox, oy, shouldAbort) {
       const w = imageData.width;
       const h = imageData.height;
       const data = imageData.data;
-      const hasV = ox > 0;
-      const hasH = oy > 0;
-      if (!hasV && !hasH) return true;
+      if (ox === 0 && oy === 0) return true;
 
-      const band = Math.max(8, Math.min(32, Math.floor(Math.min(w, h) / 20)));
-      const iterations = 80;
+      const workMax = 512;
+      const longSide = Math.max(w, h);
+      const scale = longSide > workMax ? workMax / longSide : 1;
+      const sw = Math.max(16, Math.round(w * scale));
+      const sh = Math.max(16, Math.round(h * scale));
+      const sox = Math.round(ox * scale);
+      const soy = Math.round(oy * scale);
+
+      const broadBand = Math.max(16, Math.floor(Math.min(sw, sh) / 3));
+      const narrowBand = Math.min(48, Math.max(16, Math.floor(Math.min(w, h) / 30)));
+
+      for (let c = 0; c < 3; c++) {
+        const fullSrc = new Float32Array(w * h);
+        for (let i = 0, p = c; i < w * h; i++, p += 4) fullSrc[i] = data[p];
+
+        // Pass 1: broad correction
+        if (scale < 1) {
+          const lowSrc = boxDownscale(fullSrc, w, h, sw, sh);
+          const lowHealed = await poissonHeal(lowSrc, sw, sh, sox, soy, broadBand, 2, shouldAbort);
+          if (!lowHealed) return false;
+          const lowCorr = new Float32Array(sw * sh);
+          for (let i = 0; i < sw * sh; i++) lowCorr[i] = lowHealed[i] - lowSrc[i];
+          const fullCorr = bilinearUpscale(lowCorr, sw, sh, w, h);
+          for (let i = 0; i < w * h; i++) fullSrc[i] += fullCorr[i];
+        }
+
+        // Pass 2: sharp residual cleanup at full res
+        const finalHealed = await poissonHeal(fullSrc, w, h, ox, oy, narrowBand, 3, shouldAbort);
+        if (!finalHealed) return false;
+
+        for (let i = 0, p = c; i < w * h; i++, p += 4) {
+          let v = finalHealed[i] | 0;
+          if (v < 0) v = 0; else if (v > 255) v = 255;
+          data[p] = v;
+        }
+
+        if (shouldAbort && shouldAbort()) return false;
+      }
+      return true;
+    }
+
+    // Poisson solver: ∇²f = div(v) on a band around the seam(s), where v is the
+    // source gradient everywhere except across edges within `seamHalf` of the seam
+    // line — those are zeroed so the discontinuity is absorbed instead of preserved.
+    // SOR (Successive Over-Relaxation) converges much faster than plain Jacobi.
+    async function poissonHeal(src, w, h, ox, oy, band, seamHalf, shouldAbort) {
+      const hasV = ox > 0 && ox < w;
+      const hasH = oy > 0 && oy < h;
+      if (!hasV && !hasH) return src.slice();
+
       const N = w * h;
 
-      // Mask of pixels we'll solve for
       const inMask = new Uint8Array(N);
-      const maskedPixels = [];
+      const masked = [];
       for (let y = 1; y < h - 1; y++) {
         for (let x = 1; x < w - 1; x++) {
           const nearV = hasV && Math.abs(x - ox) < band;
@@ -614,59 +666,89 @@
           if (nearV || nearH) {
             const p = y * w + x;
             inMask[p] = 1;
-            maskedPixels.push(p);
+            masked.push(p);
           }
         }
       }
 
-      // Per channel: solve Poisson equation
-      for (let c = 0; c < 3; c++) {
-        const src = new Float32Array(N);
-        for (let i = 0; i < N; i++) src[i] = data[i * 4 + c];
+      const b = new Float32Array(N);
+      for (let k = 0; k < masked.length; k++) {
+        const p = masked[k];
+        const x = p % w, y = (p - x) / w;
+        const sP = src[p];
+        let sum = 0;
+        if (!(hasV && Math.abs(x + 1 - ox) <= seamHalf)) sum += sP - src[p + 1];
+        if (!(hasV && Math.abs(x - ox) <= seamHalf))     sum += sP - src[p - 1];
+        if (!(hasH && Math.abs(y + 1 - oy) <= seamHalf)) sum += sP - src[p + w];
+        if (!(hasH && Math.abs(y - oy) <= seamHalf))     sum += sP - src[p - w];
+        b[p] = sum;
+      }
 
-        // Precompute divergence b(p) for masked pixels.
-        // Edges that cross a seam contribute 0; other edges contribute (src(p) - src(q)).
-        const b = new Float32Array(N);
-        for (let k = 0; k < maskedPixels.length; k++) {
-          const p = maskedPixels[k];
-          const x = p % w, y = (p - x) / w;
-          const sP = src[p];
-          let sum = 0;
-          if (!(hasV && x + 1 === ox)) sum += sP - src[p + 1];
-          if (!(hasV && x === ox))     sum += sP - src[p - 1];
-          if (!(hasH && y + 1 === oy)) sum += sP - src[p + w];
-          if (!(hasH && y === oy))     sum += sP - src[p - w];
-          b[p] = sum;
+      const f = new Float32Array(src);
+      const iterations = Math.max(120, band * 2);
+      const omega = 1.85;
+      const oneMinusOmega = 1 - omega;
+      const quarterOmega = omega * 0.25;
+
+      for (let it = 0; it < iterations; it++) {
+        for (let k = 0; k < masked.length; k++) {
+          const p = masked[k];
+          const r = inMask[p + 1] ? f[p + 1] : src[p + 1];
+          const l = inMask[p - 1] ? f[p - 1] : src[p - 1];
+          const d = inMask[p + w] ? f[p + w] : src[p + w];
+          const u = inMask[p - w] ? f[p - w] : src[p - w];
+          f[p] = oneMinusOmega * f[p] + quarterOmega * (r + l + d + u + b[p]);
         }
-
-        let f = new Float32Array(src);
-        let fNew = new Float32Array(src);
-
-        for (let it = 0; it < iterations; it++) {
-          for (let k = 0; k < maskedPixels.length; k++) {
-            const p = maskedPixels[k];
-            const r = inMask[p + 1] ? f[p + 1] : src[p + 1];
-            const l = inMask[p - 1] ? f[p - 1] : src[p - 1];
-            const d = inMask[p + w] ? f[p + w] : src[p + w];
-            const u = inMask[p - w] ? f[p - w] : src[p - w];
-            fNew[p] = (r + l + d + u + b[p]) * 0.25;
-          }
-          const tmp = f; f = fNew; fNew = tmp;
-
-          if ((it + 1) % 8 === 0 && it < iterations - 1) {
-            await new Promise(r => setTimeout(r, 0));
-            if (shouldAbort && shouldAbort()) return false;
-          }
-        }
-
-        for (let k = 0; k < maskedPixels.length; k++) {
-          const p = maskedPixels[k];
-          let v = f[p] | 0;
-          if (v < 0) v = 0; else if (v > 255) v = 255;
-          data[p * 4 + c] = v;
+        if ((it + 1) % 20 === 0 && it < iterations - 1) {
+          await new Promise(r => setTimeout(r, 0));
+          if (shouldAbort && shouldAbort()) return null;
         }
       }
-      return true;
+      return f;
+    }
+
+    function boxDownscale(src, sw, sh, dw, dh) {
+      const dst = new Float32Array(dw * dh);
+      const ry = sh / dh, rx = sw / dw;
+      for (let dy = 0; dy < dh; dy++) {
+        const y0 = (dy * ry) | 0;
+        const y1 = Math.max(y0 + 1, ((dy + 1) * ry) | 0);
+        for (let dx = 0; dx < dw; dx++) {
+          const x0 = (dx * rx) | 0;
+          const x1 = Math.max(x0 + 1, ((dx + 1) * rx) | 0);
+          let sum = 0, count = 0;
+          for (let y = y0; y < y1; y++) {
+            const row = y * sw;
+            for (let x = x0; x < x1; x++) { sum += src[row + x]; count++; }
+          }
+          dst[dy * dw + dx] = sum / count;
+        }
+      }
+      return dst;
+    }
+
+    function bilinearUpscale(src, sw, sh, dw, dh) {
+      const dst = new Float32Array(dw * dh);
+      const ry = sh / dh, rx = sw / dw;
+      for (let dy = 0; dy < dh; dy++) {
+        const sy = (dy + 0.5) * ry - 0.5;
+        const y0 = Math.max(0, Math.min(sh - 1, Math.floor(sy)));
+        const y1 = Math.max(0, Math.min(sh - 1, y0 + 1));
+        const wy = sy - Math.floor(sy);
+        const row0 = y0 * sw, row1 = y1 * sw;
+        for (let dx = 0; dx < dw; dx++) {
+          const sx = (dx + 0.5) * rx - 0.5;
+          const x0 = Math.max(0, Math.min(sw - 1, Math.floor(sx)));
+          const x1 = Math.max(0, Math.min(sw - 1, x0 + 1));
+          const wx = sx - Math.floor(sx);
+          const v00 = src[row0 + x0], v01 = src[row0 + x1];
+          const v10 = src[row1 + x0], v11 = src[row1 + x1];
+          const v0 = v00 + (v01 - v00) * wx;
+          const v1 = v10 + (v11 - v10) * wx;
+          dst[dy * dw + dx] = v0 + (v1 - v0) * wy;
+        }
+      }
+      return dst;
     }
 
     function getBlob(type = 'image/png') {
